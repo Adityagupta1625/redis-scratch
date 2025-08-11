@@ -1,9 +1,146 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"syscall"
 )
+
+const kMaxMsg = 4096
+
+// read_full ensures that exactly 'len' bytes are read from the file descriptor
+// This function handles partial reads by continuing to read until all requested bytes are received
+//
+// Parameters:
+//   - fd (int): File descriptor to read from
+//   - buf ([]byte): Buffer to store the read data
+//   - len (int): Number of bytes to read
+//
+// Returns:
+//   - error: nil on success, error if read fails or EOF is encountered
+//
+// Example usage:
+//   buffer := make([]byte, 1024)
+//   err := read_full(connfd, buffer, 512)  // Read exactly 512 bytes
+func read_full(fd int, buf []byte, len int) error {
+	
+	offset:=0
+
+	for len > 0 {
+		n, err:= syscall.Read(fd, buf[offset:len])
+
+		if err != nil {
+			return fmt.Errorf("Error reading from socket: %v", err)
+		}
+
+		if n==0{
+			return fmt.Errorf("EOF reading from socket")
+		}
+
+		offset+=n
+		len-=n
+	}
+
+	return nil
+}
+
+// write_full ensures that all bytes in the buffer are written to the file descriptor
+// This function handles partial writes by continuing to write until all data is sent
+//
+// Parameters:
+//   - fd (int): File descriptor to write to
+//   - buf ([]byte): Buffer containing data to write
+//
+// Returns:
+//   - error: nil on success, error if write fails or returns 0 unexpectedly
+//
+// Example usage:
+//   message := []byte("Hello Redis")
+//   err := write_full(connfd, message)  // Write entire message
+func write_full(fd int, buf []byte) error{
+	total:=len(buf)
+	offset:=0
+
+	for total > 0 {
+		n, err:= syscall.Write(fd,buf[offset:total])
+
+		if err!=nil{
+			return fmt.Errorf("Error writing to socket: %v", err)
+		}
+
+		if n==0{
+			return fmt.Errorf("write returned 0, unexpected")
+		}
+
+		offset+=n
+		total-=n
+	}
+
+	return nil
+}
+
+// one_request handles a single client request using a length-prefixed protocol
+// This function implements the Redis wire protocol for message framing
+//
+// Protocol format:
+//   - 4 bytes: message length (little endian)
+//   - N bytes: message body
+//
+// Parameters:
+//   - connfd (int): File descriptor of the client connection
+//
+// Returns:
+//   - error: nil on success, error if protocol violation or I/O error occurs
+//
+// Example usage:
+//   connfd, _, err := syscall.Accept(serverfd)
+//   if err == nil {
+//       err = one_request(connfd)  // Process one client request
+//   }
+func one_request(connfd int) error {
+
+	// Step 1: Read 4 byte length header
+	rbuf:= make([]byte,4+kMaxMsg)
+	err:= read_full(connfd,rbuf,4);
+
+	if err!=nil{
+		fmt.Println("Error reading from socket:", err)
+		return err
+	}
+
+	// Step 2: Decode length (little endian)
+	length:= binary.LittleEndian.Uint32(rbuf[:4])
+	if length > kMaxMsg {
+		fmt.Println("too long")
+		return fmt.Errorf("message too long: %d", length)
+	}
+
+	// Step 3: Read message body
+	err = read_full(connfd, rbuf[4:4+length],int(length)); 
+	
+	if err != nil {
+		fmt.Println("read() error:", err)
+		return err
+	}
+
+	fmt.Printf("client says: %s\n", string(rbuf[4:4+length]))
+
+	// Step 4: Send response
+	reply := []byte("Hello world!!")
+	replyLen := uint32(len(reply))
+	wbuf := make([]byte, 4+replyLen)
+	binary.LittleEndian.PutUint32(wbuf[:4], replyLen)
+	copy(wbuf[4:], reply)
+
+	err = write_full(connfd, wbuf); 
+	
+	if err != nil {
+		fmt.Println("write_all() error:", err)
+		return err
+	}
+
+	return nil
+}
 
 // handleConnection processes incoming client connections by reading data and sending a response
 // This function demonstrates basic socket I/O operations for a Redis-like server
@@ -214,8 +351,8 @@ func main() {
 
 		fmt.Printf("Accepted connection from %v\n", sa)
 
-		// Handle the client connection
-		handleConnection(connfd)
+		// handleConnection(connfd)
+		one_request(connfd)
 
 		// syscall.Close closes a file descriptor
 		// Parameters: syscall.Close(fd int)

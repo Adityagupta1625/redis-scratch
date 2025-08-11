@@ -1,9 +1,148 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"syscall"
 )
+
+const kMaxMsg = 4096
+
+// read_full ensures that exactly 'len' bytes are read from the file descriptor
+// This function handles partial reads by continuing to read until all requested bytes are received
+//
+// Parameters:
+//   - fd (int): File descriptor to read from
+//   - buf ([]byte): Buffer to store the read data
+//   - len (int): Number of bytes to read
+//
+// Returns:
+//   - error: nil on success, error if read fails or EOF is encountered
+//
+// Example usage:
+//   buffer := make([]byte, 1024)
+//   err := read_full(connfd, buffer, 512)  // Read exactly 512 bytes
+func read_full(fd int, buf []byte, len int) error {
+	
+	offset:=0
+
+	for len > 0 {
+		n, err:= syscall.Read(fd, buf[offset:len])
+
+		if err != nil {
+			return fmt.Errorf("Error reading from socket: %v", err)
+		}
+
+		if n==0{
+			return fmt.Errorf("EOF reading from socket")
+		}
+
+		offset+=n
+		len-=n
+	}
+
+	return nil
+}
+
+// write_full ensures that all bytes in the buffer are written to the file descriptor
+// This function handles partial writes by continuing to write until all data is sent
+//
+// Parameters:
+//   - fd (int): File descriptor to write to
+//   - buf ([]byte): Buffer containing data to write
+//
+// Returns:
+//   - error: nil on success, error if write fails or returns 0 unexpectedly
+//
+// Example usage:
+//   message := []byte("PING")
+//   err := write_full(connfd, message)  // Write entire message
+func write_full(fd int, buf []byte) error{
+	total:=len(buf)
+	offset:=0
+
+	for total > 0 {
+		n, err:= syscall.Write(fd,buf[offset:total])
+	
+		if err!=nil{
+			return fmt.Errorf("Error writing to socket: %v", err)
+		}
+
+		if n==0{
+			return fmt.Errorf("write returned 0, unexpected")
+		}
+
+		offset+=n
+		total-=n
+	}
+
+	return nil
+}
+
+// query sends a command to the Redis server and reads the response
+// This function implements the client side of the length-prefixed protocol
+//
+// Protocol format:
+//   - Send: 4 bytes length + message body
+//   - Receive: 4 bytes length + response body
+//
+// Parameters:
+//   - fd (int): File descriptor of the server connection
+//   - text (string): Command text to send to the server
+//
+// Returns:
+//   - error: nil on success, error if message too long, I/O error, or protocol violation
+//
+// Example usage:
+//   err := query(serverfd, "PING")        // Send PING command
+//   err := query(serverfd, "GET mykey")   // Send GET command
+func query(fd int, text string) error {
+
+	length := len(text)
+	if length > kMaxMsg {
+		return fmt.Errorf("message too long")
+	}
+
+	// Prepare write buffer (length-prefixed message)
+	wbuf := make([]byte, 4+length)
+	binary.LittleEndian.PutUint32(wbuf[:4], uint32(length))
+	copy(wbuf[4:], text)
+
+	// Write full request
+	err := write_full(fd, wbuf); 
+	
+	if err != nil {
+		return fmt.Errorf("write_all error: %v", err)
+	}
+
+	// Read 4-byte response header
+	rbuf := make([]byte, 4+kMaxMsg+1)
+
+	err = read_full(fd, rbuf[:4],4); 
+	
+	if err != nil {
+		return err
+	}
+
+	// Parse reply length
+	replyLen := binary.LittleEndian.Uint32(rbuf[:4])
+	if replyLen > kMaxMsg {
+		fmt.Println("too long")
+		return fmt.Errorf("response too long: %d", replyLen)
+	}
+
+	// Read response body
+	err = read_full(fd, rbuf[4:4+replyLen],int(replyLen)); 
+	
+	if err != nil {
+		fmt.Println("read() error:", err)
+		return err
+	}
+
+	// Print response
+	fmt.Printf("server says: %s\n", string(rbuf[4:4+replyLen]))
+	return nil
+}
 
 // main function implements a basic Redis client that connects to a server
 // This demonstrates client-side socket programming using system calls
@@ -88,7 +227,7 @@ func main() {
 	//   - []byte("GET key1") creates [71 69 84 32 107 101 121 49]
 	//   - []byte("SET key value") for Redis SET command
 	//   - []byte("PING") for Redis PING command
-	wbuf := []byte("Hello World")
+	// wbuf := []byte("Hello World")
 	
 	// syscall.Write sends data to the server through the socket
 	//
@@ -104,12 +243,12 @@ func main() {
 	//   message := []byte("PING")
 	//   n, err := syscall.Write(fd, message)
 	//   // Sends PING command to Redis server
-	_, err = syscall.Write(fd, wbuf)
+	// _, err = syscall.Write(fd, wbuf)
 
-	if err != nil {
-		fmt.Println("Error writing to socket:", err)
-		return
-	}
+	// if err != nil {
+	// 	fmt.Println("Error writing to socket:", err)
+	// 	return
+	// }
 
 	// make creates a slice with specified length and capacity
 	// Parameters: make([]type, length, capacity)
@@ -117,7 +256,7 @@ func main() {
 	//   - make([]byte, 1024) creates 1KB buffer for large responses
 	//   - make([]byte, 64) creates 64-byte buffer for small responses
 	//   - make([]byte, 4096) creates 4KB buffer for bulk data
-	rbuf := make([]byte, 64)
+	// rbuf := make([]byte, 64)
 	
 	// syscall.Read receives data from the server through the socket
 	//
@@ -133,19 +272,22 @@ func main() {
 	//   buffer := make([]byte, 1024)
 	//   n, err := syscall.Read(fd, buffer)
 	//   response := string(buffer[:n])  // Convert bytes to string
-	n, err := syscall.Read(fd, rbuf)
+	// n, err := syscall.Read(fd, rbuf)
 
-	if err != nil {
-		fmt.Println("Error reading from socket:", err)
-		return
-	}
+	// if err != nil {
+	// 	fmt.Println("Error reading from socket:", err)
+	// 	return
+	// }
 	
 	// string() converts byte slice to string
 	// rbuf[:n] creates a slice from index 0 to n (excluding n)
 	// Examples:
 	//   - string([]byte{72, 101, 108, 108, 111}) = "Hello"
 	//   - string(rbuf[:n]) converts only the bytes that were actually read
-	fmt.Println("Read", n, "bytes:", string(rbuf[:n]))
+	// fmt.Println("Read", n, "bytes:", string(rbuf[:n]))
+
+
+	query(fd, "PING")
 
 	// syscall.Close closes the socket connection
 	// Parameters: syscall.Close(fd int)
